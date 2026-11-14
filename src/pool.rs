@@ -274,7 +274,8 @@ pub fn status(store: &Store) -> Result<Report> {
         Ok(State { devices: state.devices.clone(), templates: state.templates.clone() })
     })?;
     let stamp = now();
-    let mut lines = vec![format!("{:<16} {:<9} {:<28} {:<9} {:<8} DEVICE", "NAME", "STATE", "OWNER", "EXPIRES", "SIZE")];
+    let owner_width = state.devices.iter().filter_map(|device| device.lease.as_ref()).map(|lease| lease.owner.chars().count()).max().unwrap_or(0).max(5);
+    let mut lines = vec![format!("{:<16} {:<9} {:<owner_width$} {:<9} {:<8} DEVICE", "NAME", "STATE", "OWNER", "EXPIRES", "SIZE")];
     let mut rows = Vec::new();
     for device in &state.devices {
         let sim = sims.iter().find(|sim| sim.udid == device.udid);
@@ -285,7 +286,7 @@ pub fn status(store: &Store) -> Result<Report> {
             Some(lease) => (lease.owner.as_str(), "expired".to_string()),
             None => ("free", "-".to_string()),
         };
-        lines.push(format!("{:<16} {:<9} {:<28} {:<9} {:<8} {} · {}", device.name, live, owner, expires, human_size(size), short(&device.device_type), short(&device.runtime)));
+        lines.push(format!("{:<16} {:<9} {:<owner_width$} {:<9} {:<8} {} · {}", device.name, live, owner, expires, human_size(size), short(&device.device_type), short(&device.runtime)));
         rows.push(json!({ "udid": device.udid, "name": device.name, "state": live, "owner": device.lease.as_ref().map(|lease| &lease.owner), "expires_at": device.lease.as_ref().map(|lease| lease.expires_at), "size_bytes": size, "device_type": device.device_type, "runtime": device.runtime }));
     }
     if state.devices.is_empty() {
@@ -340,6 +341,12 @@ pub fn plan_gc(state: &State, sims: &[SimDevice], stamp: u64, keep_free: usize, 
     actions
 }
 
+/// Simulators someone created by hand: not simpool's, and not one of the
+/// stock devices Xcode makes, which are named after their device type.
+pub fn hand_made<'a>(sims: &'a [SimDevice], stock_names: &[String]) -> Vec<&'a SimDevice> {
+    sims.iter().filter(|sim| !sim.name.starts_with(POOL_PREFIX) && !stock_names.iter().any(|name| name == &sim.name)).collect()
+}
+
 pub fn gc(store: &Store, apply: bool, keep_free: usize, idle_secs: u64) -> Result<Report> {
     let sims = simctl::list_devices()?;
     let actions = store.with(|state| {
@@ -375,6 +382,15 @@ pub fn gc(store: &Store, apply: bool, keep_free: usize, idle_secs: u64) -> Resul
             }
         }
     }
+    let stock: Vec<String> = simctl::list_device_types().map(|kinds| kinds.into_iter().map(|kind| kind.name).collect()).unwrap_or_default();
+    let hand_made = hand_made(&sims, &stock);
+    if !hand_made.is_empty() {
+        let total: u64 = hand_made.iter().map(|sim| sim.size_bytes).sum();
+        lines.push(format!("{} hand-made simulator(s) hold {}. simpool will not touch them; delete one with `xcrun simctl delete <name>` once nobody uses it:", hand_made.len(), human_size(total)));
+        for sim in &hand_made {
+            lines.push(format!("  {} ({}, {})", sim.name, sim.state, human_size(sim.size_bytes)));
+        }
+    }
     let untouched = sims.iter().filter(|sim| !sim.name.starts_with(POOL_PREFIX)).count();
     let summary = match (actions.is_empty(), apply) {
         (true, _) => "Nothing to clean up.".to_string(),
@@ -383,7 +399,8 @@ pub fn gc(store: &Store, apply: bool, keep_free: usize, idle_secs: u64) -> Resul
     };
     lines.push(summary);
     lines.push(format!("{untouched} simulator(s) that simpool did not create were left alone."));
-    Ok(Report { text: lines.join("\n"), json: json!({ "applied": apply, "actions": actions, "left_alone": untouched }) })
+    let hand_made_json: Vec<Value> = hand_made.iter().map(|sim| json!({ "udid": sim.udid, "name": sim.name, "state": sim.state, "size_bytes": sim.size_bytes })).collect();
+    Ok(Report { text: lines.join("\n"), json: json!({ "applied": apply, "actions": actions, "left_alone": untouched, "hand_made": hand_made_json }) })
 }
 
 #[cfg(test)]
@@ -400,6 +417,13 @@ mod tests {
 
     fn lease(owner: &str, path: &str, expires_at: u64) -> Lease {
         Lease { owner: owner.into(), owner_path: path.into(), leased_at: 0, expires_at, ttl_secs: 100 }
+    }
+
+    #[test]
+    fn hand_made_excludes_stock_and_pool_devices() {
+        let sims = [sim("A", "iPhone 17 Pro"), sim("B", "simpool-abc123"), sim("C", "my-own-simulator"), sim("D", "simpool-template iPhone 17 Pro 26.5")];
+        let found = hand_made(&sims, &["iPhone 17 Pro".to_string()]);
+        assert_eq!(found.iter().map(|sim| sim.udid.as_str()).collect::<Vec<_>>(), ["C"]);
     }
 
     #[test]

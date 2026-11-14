@@ -48,7 +48,7 @@ cargo install --git https://github.com/williamrogersdev/simpool
 | `simpool open-url <url>` | Opens a URL or deep link. |
 | `simpool shot [path]` | Saves a screenshot and prints its path. |
 | `simpool status` | The pool, who holds what, what is booted, and disk used. |
-| `simpool gc` | Plans a cleanup. Changes nothing without `--apply`. |
+| `simpool gc` | Plans a cleanup and lists hand-made simulators it will not touch. Changes nothing without `--apply`. |
 | `simpool doctor` | Checks Xcode, the license, locale, process limit, runtimes and disk. |
 
 Every command takes `--json`. The owner defaults to the name of the current git
