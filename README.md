@@ -32,7 +32,7 @@ not replace the Simulator.
 Needs macOS with Xcode, and Rust 1.89 or newer.
 
 ```bash
-cargo install --git https://github.com/williamrogersdev/simpool
+cargo install --git https://github.com/williamrogersdev/simpool --tag v0.1.1
 ```
 
 ## Commands

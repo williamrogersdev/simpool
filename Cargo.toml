@@ -1,6 +1,6 @@
 [package]
 name = "simpool"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A pool of iOS simulators, one per worktree, for developers and coding agents"
 license = "MIT"
