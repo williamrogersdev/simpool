@@ -1,12 +1,16 @@
 mod doctor;
+mod hid;
+mod mcp;
 mod pool;
 mod simctl;
 mod state;
+mod view;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use pool::{Owner, Report};
 
@@ -58,6 +62,38 @@ enum Command {
     OpenUrl { url: String },
     /// Save a screenshot and print its path
     Shot { path: Option<String> },
+    /// Tap the screen. x and y are fractions of the screen from the top left, 0 to 1
+    Tap {
+        x: f64,
+        y: f64,
+        /// Hold for this many milliseconds, for a long press
+        #[arg(long, default_value_t = 60)]
+        hold: u64,
+    },
+    /// Swipe from one point to another, in fractions of the screen
+    Swipe {
+        from_x: f64,
+        from_y: f64,
+        to_x: f64,
+        to_y: f64,
+        /// How long the swipe takes, in milliseconds
+        #[arg(long, default_value_t = 300)]
+        duration: u64,
+    },
+    /// Type text into the focused field, as a hardware keyboard would
+    Type { text: String },
+    /// Press one key: return, delete, escape, tab, space, up, down, left, right
+    Key { name: String },
+    /// Press a hardware button: home, lock, side, siri
+    Button { name: String },
+    /// Watch and control the leased simulator in a browser, on this Mac only
+    View {
+        /// Port to listen on; a free one when omitted
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+    },
+    /// Run as an MCP server on stdio, so a coding agent can use the pool as tools
+    Mcp,
     /// Show the pool, who holds what, and what is booted
     Status,
     /// Plan the cleanup of ended leases and idle devices; --apply makes the changes
@@ -85,6 +121,17 @@ fn owner(named: Option<String>) -> Result<Owner> {
     Ok(Owner { name, path })
 }
 
+fn fraction(value: f64) -> Result<()> {
+    if !(0.0..=1.0).contains(&value) {
+        bail!("{value} is not a fraction of the screen. Use 0 to 1, such as 0.5 for the middle");
+    }
+    Ok(())
+}
+
+fn input(store: &state::Store, owner: &Owner) -> Result<hid::Hid> {
+    hid::Hid::for_device(&pool::held(store, owner)?)
+}
+
 fn execute(cli: Cli) -> Result<(Report, bool)> {
     if let Command::Doctor = cli.command {
         let checks = doctor::checks();
@@ -93,7 +140,24 @@ fn execute(cli: Cli) -> Result<(Report, bool)> {
     }
     let store = state::Store::open()?;
     let owner = owner(cli.owner)?;
+    let as_json = cli.json;
     let report = match cli.command {
+        Command::View { port } => {
+            let udid = pool::held(&store, &owner)?;
+            let input = hid::Hid::for_device(&udid)?;
+            view::serve(&udid, &input, port, |address| {
+                if as_json {
+                    println!("{}", json!({ "udid": udid, "url": address }));
+                } else {
+                    println!("{address}\nOpen that address to watch and control {udid}. Ctrl-C stops it.");
+                }
+            })?;
+            Report { text: "viewer stopped".into(), json: json!({ "stopped": true }) }
+        }
+        Command::Mcp => {
+            mcp::serve(store, owner)?;
+            return Ok((Report { text: String::new(), json: json!(null) }, true));
+        }
         Command::Lease { device, runtime, ttl } => pool::lease(&store, &owner, &device, runtime.as_deref(), pool::parse_duration(&ttl)?)?,
         Command::Release { delete } => pool::release(&store, &owner, delete)?,
         Command::Reset => pool::reset(&store, &owner)?,
@@ -105,6 +169,33 @@ fn execute(cli: Cli) -> Result<(Report, bool)> {
         Command::Launch { bundle_id, args } => pool::launch(&store, &owner, &bundle_id, &args)?,
         Command::OpenUrl { url } => pool::open_url(&store, &owner, &url)?,
         Command::Shot { path } => pool::shot(&store, &owner, path)?,
+        Command::Tap { x, y, hold } => {
+            fraction(x)?;
+            fraction(y)?;
+            input(&store, &owner)?.tap(x, y, Duration::from_millis(hold))?;
+            Report { text: format!("tapped {x} {y}"), json: json!({ "tapped": [x, y] }) }
+        }
+        Command::Swipe { from_x, from_y, to_x, to_y, duration } => {
+            for value in [from_x, from_y, to_x, to_y] {
+                fraction(value)?;
+            }
+            input(&store, &owner)?.swipe((from_x, from_y), (to_x, to_y), Duration::from_millis(duration))?;
+            Report { text: format!("swiped {from_x} {from_y} to {to_x} {to_y}"), json: json!({ "swiped": [from_x, from_y, to_x, to_y] }) }
+        }
+        Command::Type { text } => {
+            input(&store, &owner)?.type_text(&text)?;
+            Report { text: format!("typed {} character(s)", text.chars().count()), json: json!({ "typed": text.chars().count() }) }
+        }
+        Command::Key { name } => {
+            let usage = hid::named_key(&name).with_context(|| format!("no key named `{name}`. Use return, delete, escape, tab, space, up, down, left or right"))?;
+            input(&store, &owner)?.key(usage, false)?;
+            Report { text: format!("pressed {name}"), json: json!({ "pressed": name }) }
+        }
+        Command::Button { name } => {
+            let code = hid::named_button(&name).with_context(|| format!("no button named `{name}`. Use home, lock, side or siri"))?;
+            input(&store, &owner)?.button(code)?;
+            Report { text: format!("pressed {name}"), json: json!({ "pressed": name }) }
+        }
         Command::Status => pool::status(&store)?,
         Command::Gc { apply, keep_free, idle } => pool::gc(&store, apply, keep_free, pool::parse_duration(&idle)?)?,
         Command::Doctor => unreachable!("handled above"),
@@ -117,6 +208,9 @@ fn main() -> ExitCode {
     let as_json = cli.json;
     match execute(cli) {
         Ok((report, success)) => {
+            if report.json.is_null() {
+                return ExitCode::SUCCESS;
+            }
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&report.json).unwrap_or_default());
             } else {

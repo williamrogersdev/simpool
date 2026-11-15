@@ -19,20 +19,22 @@ $ simpool install ios/build/Build/Products/Debug-iphonesimulator/MyApp.app
 com.example.myapp installed on DF72C156-7D22-4762-BEC8-DFB7DFFFFDC8
 
 $ simpool launch com.example.myapp
-$ simpool shot before.png
+$ simpool tap 0.5 0.9
+$ simpool type "hello@example.com"
+$ simpool shot after.png
 $ simpool release
 simpool-2af373 shut down and returned to the pool
 ```
 
-It is a thin, careful layer over `xcrun simctl`. It is not an emulator and does
-not replace the Simulator.
+It is a thin, careful layer over `xcrun simctl`, plus the input that `simctl`
+lacks. It is not an emulator and does not replace the Simulator.
 
 ## Install
 
 Needs macOS with Xcode, and Rust 1.89 or newer.
 
 ```bash
-cargo install --git https://github.com/williamrogersdev/simpool --tag v0.1.1
+cargo install --git https://github.com/williamrogersdev/simpool --tag v0.2.0
 ```
 
 ## Commands
@@ -47,6 +49,13 @@ cargo install --git https://github.com/williamrogersdev/simpool --tag v0.1.1
 | `simpool launch <bundle id>` | Launches the app, restarting it if it is running. |
 | `simpool open-url <url>` | Opens a URL or deep link. |
 | `simpool shot [path]` | Saves a screenshot and prints its path. |
+| `simpool tap <x> <y>` | Taps the screen. `--hold 800` for a long press. |
+| `simpool swipe <x> <y> <x2> <y2>` | Drags from one point to another. `--duration 300`. |
+| `simpool type <text>` | Types into the focused field, as a hardware keyboard would. |
+| `simpool key <name>` | Presses `return`, `delete`, `escape`, `tab`, `space` or an arrow. |
+| `simpool button <name>` | Presses `home`, `lock`, `side` or `siri`. |
+| `simpool view` | Serves a page that shows the screen live and sends your clicks, drags and keys to it. |
+| `simpool mcp` | Runs as an MCP server, so a coding agent uses all of the above as tools. |
 | `simpool status` | The pool, who holds what, what is booted, and disk used. |
 | `simpool gc` | Plans a cleanup and lists hand-made simulators it will not touch. Changes nothing without `--apply`. |
 | `simpool doctor` | Checks Xcode, the license, locale, process limit, runtimes and disk. |
@@ -80,12 +89,59 @@ so it is created in about a second and skips the slow first boot.
 State is one JSON file in `~/Library/Application Support/simpool`, changed only
 under a file lock, so many agents can call `simpool` at once.
 
+## Touch and typing
+
+Screen positions are fractions from the top left: `0.5 0.5` is the middle,
+whatever the device. An agent reading a resized screenshot gets the same
+answer as one reading the full image.
+
+```console
+$ simpool tap 0.85 0.49
+$ simpool swipe 0.5 0.8 0.5 0.3
+$ simpool type "Stand By?"
+$ simpool key return
+$ simpool button home
+```
+
+`simctl` has no input command, so these call the private SimulatorKit
+framework inside Xcode, the same one the Simulator app uses. Tested on Xcode
+27.2. If an Xcode release changes that framework, the commands say so and
+everything else keeps working. `type` covers the US keyboard.
+
+## Watch it live
+
+```console
+$ simpool view
+http://127.0.0.1:52114/?k=5f0c…
+```
+
+Open the address in any browser. Click to tap, drag to swipe, type to type.
+It refreshes about three times a second, listens on this Mac only, and
+refuses any request without the key in the address.
+
+## For coding agents (MCP)
+
+`simpool mcp` speaks the Model Context Protocol on stdio, both the 2026-07-28
+revision and the older handshake. The tools are `lease`, `release`, `reset`,
+`status`, `doctor`, `install`, `launch`, `open_url`, `screenshot` (returns the
+image), `tap`, `swipe`, `type_text`, `press_key` and `press_button`.
+
+```json
+{
+  "mcpServers": {
+    "simpool": { "command": "simpool", "args": ["mcp"] }
+  }
+}
+```
+
+The owner is the worktree the server starts in. When several agents share one
+server, each passes `owner` on its calls.
+
 ## Not yet
 
-- Taps, swipes and typing. `simctl` cannot inject touch; use Maestro or `idb`
-  with `simpool udid` for now.
-- Screen streaming.
-- An MCP server, so agents can call it as a tool.
+- Pinch and other two-finger gestures.
+- Typing characters outside the US keyboard.
+- Video-rate streaming; the viewer sends screenshots.
 
 ## License
 

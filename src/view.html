@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>simpool</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f2f2f4; --ink: #1c1c1e; --line: #c7c7cc; --panel: #fff; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111113; --ink: #f2f2f4; --line: #3a3a3e; --panel: #1c1c1e; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font: 14px/1.4 -apple-system, system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; }
+  #screen { height: calc(100vh - 110px); max-width: 100%; border-radius: 28px; border: 1px solid var(--line); cursor: pointer; user-select: none; -webkit-user-drag: none; touch-action: none; background: #000; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
+  button { font: inherit; color: inherit; min-height: 44px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
+  #note { min-height: 20px; opacity: .7; }
+</style>
+</head>
+<body>
+<img id="screen" alt="Simulator screen" src="/stream?k=__KEY__" draggable="false">
+<div class="bar">
+  <button data-button="home">Home</button>
+  <button data-button="lock">Lock</button>
+  <span id="note">Click to tap, drag to swipe, type to type.</span>
+</div>
+<script>
+const key = "__KEY__";
+const screen = document.getElementById("screen");
+const note = document.getElementById("note");
+let queue = Promise.resolve();
+function send(path, fields) {
+  const search = new URLSearchParams({ k: key, ...fields });
+  queue = queue.then(() => fetch(path + "?" + search, { method: "POST" }))
+    .then(async (reply) => { note.textContent = reply.ok ? "" : await reply.text(); })
+    .catch(() => { note.textContent = "simpool view has stopped."; });
+}
+function spot(event) {
+  const box = screen.getBoundingClientRect();
+  const clamp = (value) => Math.min(1, Math.max(0, value));
+  return { x: clamp((event.clientX - box.left) / box.width), y: clamp((event.clientY - box.top) / box.height) };
+}
+let start = null;
+screen.addEventListener("pointerdown", (event) => { screen.setPointerCapture(event.pointerId); start = { ...spot(event), at: performance.now() }; event.preventDefault(); });
+screen.addEventListener("pointerup", (event) => {
+  if (!start) return;
+  const end = spot(event);
+  const ms = Math.round(performance.now() - start.at);
+  if (Math.hypot(end.x - start.x, end.y - start.y) < 0.02) send("/tap", { x: start.x, y: start.y, hold: Math.max(60, ms) });
+  else send("/swipe", { x: start.x, y: start.y, x2: end.x, y2: end.y, ms: Math.max(120, ms) });
+  start = null;
+});
+const named = { Enter: "return", Backspace: "delete", Escape: "escape", Tab: "tab", ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
+document.addEventListener("keydown", (event) => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (named[event.key]) send("/key", { n: named[event.key] });
+  else if (event.key.length === 1) send("/type", { t: event.key });
+  else return;
+  event.preventDefault();
+});
+document.querySelectorAll("[data-button]").forEach((control) => control.addEventListener("click", () => { send("/button", { n: control.dataset.button }); control.blur(); }));
+</script>
+</body>
+</html>
