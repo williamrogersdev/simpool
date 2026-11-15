@@ -93,7 +93,11 @@ enum Command {
         port: u16,
     },
     /// Run as an MCP server on stdio, so a coding agent can use the pool as tools
-    Mcp,
+    Mcp {
+        /// Refuse a tool call that names no owner. For one server shared by several agents
+        #[arg(long)]
+        require_owner: bool,
+    },
     /// Show the pool, who holds what, and what is booted
     Status,
     /// Plan the cleanup of ended leases and idle devices; --apply makes the changes
@@ -154,8 +158,8 @@ fn execute(cli: Cli) -> Result<(Report, bool)> {
             })?;
             Report { text: "viewer stopped".into(), json: json!({ "stopped": true }) }
         }
-        Command::Mcp => {
-            mcp::serve(store, owner)?;
+        Command::Mcp { require_owner } => {
+            mcp::serve(store, owner, require_owner)?;
             return Ok((Report { text: String::new(), json: json!(null) }, true));
         }
         Command::Lease { device, runtime, ttl } => pool::lease(&store, &owner, &device, runtime.as_deref(), pool::parse_duration(&ttl)?)?,

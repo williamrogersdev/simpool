@@ -34,7 +34,7 @@ lacks. It is not an emulator and does not replace the Simulator.
 Needs macOS with Xcode, and Rust 1.89 or newer.
 
 ```bash
-cargo install --git https://github.com/williamrogersdev/simpool --tag v0.2.0
+cargo install --git https://github.com/williamrogersdev/simpool --tag v0.2.1
 ```
 
 ## Commands
@@ -135,7 +135,9 @@ image), `tap`, `swipe`, `type_text`, `press_key` and `press_button`.
 ```
 
 The owner is the worktree the server starts in. When several agents share one
-server, each passes `owner` on its calls.
+server, or the server does not start inside the agent's worktree, run
+`simpool mcp --require-owner`: every call that touches a simulator must then
+name its `owner`, so no two agents end up driving the same device.
 
 ## Not yet
 

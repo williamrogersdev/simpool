@@ -48,7 +48,23 @@ fn tool(name: &str, title: &str, description: &str, properties: Value, required:
     })
 }
 
-pub fn tools() -> Vec<Value> {
+const OWNERLESS: &[&str] = &["status", "doctor"];
+
+pub fn tools(require_owner: bool) -> Vec<Value> {
+    let mut listed = catalog();
+    if require_owner {
+        for entry in &mut listed {
+            let needs = !OWNERLESS.contains(&entry["name"].as_str().unwrap_or_default());
+            entry["inputSchema"]["properties"]["owner"]["description"] = json!("Who holds the simulator: the folder name of your git worktree. Use the same value on every call.");
+            if let (true, Some(required)) = (needs, entry["inputSchema"]["required"].as_array_mut()) {
+                required.push(json!("owner"));
+            }
+        }
+    }
+    listed
+}
+
+fn catalog() -> Vec<Value> {
     let x = json!({ "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction across the screen from the left edge" });
     let y = json!({ "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction down the screen from the top edge" });
     vec![
@@ -85,6 +101,7 @@ pub fn tools() -> Vec<Value> {
 struct Server {
     store: Store,
     owner: Owner,
+    require_owner: bool,
     inputs: HashMap<String, Hid>,
 }
 
@@ -118,7 +135,11 @@ impl Server {
     }
 
     fn call(&mut self, name: &str, args: &Value) -> Result<Vec<Value>> {
-        let owner = match args.get("owner").and_then(Value::as_str) {
+        let named = args.get("owner").and_then(Value::as_str).filter(|named| !named.trim().is_empty());
+        if self.require_owner && named.is_none() && !OWNERLESS.contains(&name) {
+            bail!("pass `owner`: the folder name of your git worktree. This server is shared, and the owner decides whose simulator `{name}` acts on.");
+        }
+        let owner = match named {
             Some(named) => Owner { name: named.to_string(), path: self.owner.path.clone() },
             None => Owner { name: self.owner.name.clone(), path: self.owner.path.clone() },
         };
@@ -218,10 +239,10 @@ fn answer(server: &mut Server, method: &str, params: &Value) -> Result<Value, Re
             "cacheScope": "public",
         })),
         "ping" => Ok(json!({ "resultType": "complete" })),
-        "tools/list" => Ok(json!({ "resultType": "complete", "tools": tools() })),
+        "tools/list" => Ok(json!({ "resultType": "complete", "tools": tools(server.require_owner) })),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).ok_or_else(|| refusal(-32602, "tools/call needs a tool `name`"))?;
-            if !tools().iter().any(|known| known["name"] == name) {
+            if !catalog().iter().any(|known| known["name"] == name) {
                 return Err(refusal(-32602, format!("Unknown tool: {name}")));
             }
             let empty = json!({});
@@ -248,8 +269,8 @@ fn reply(id: Value, outcome: Result<Value, Refusal>) -> Value {
     }
 }
 
-pub fn serve(store: Store, owner: Owner) -> Result<()> {
-    let mut server = Server { store, owner, inputs: HashMap::new() };
+pub fn serve(store: Store, owner: Owner, require_owner: bool) -> Result<()> {
+    let mut server = Server { store, owner, require_owner, inputs: HashMap::new() };
     let mut out = std::io::stdout().lock();
     for line in std::io::stdin().lock().lines() {
         let line = line?;
@@ -280,6 +301,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_shared_server_requires_an_owner_except_to_read_the_pool() {
+        for entry in tools(true) {
+            let required = entry["inputSchema"]["required"].as_array().is_some_and(|list| list.contains(&json!("owner")));
+            assert_eq!(required, !OWNERLESS.contains(&entry["name"].as_str().unwrap_or_default()), "{}", entry["name"]);
+        }
+    }
+
+    #[test]
     fn encodes_base64_with_padding() {
         assert_eq!(base64(b""), "");
         assert_eq!(base64(b"f"), "Zg==");
@@ -290,7 +319,7 @@ mod tests {
 
     #[test]
     fn every_tool_has_a_schema_and_an_owner() {
-        let listed = tools();
+        let listed = tools(false);
         assert!(listed.len() >= 14);
         for entry in &listed {
             assert_eq!(entry["inputSchema"]["type"], "object");
